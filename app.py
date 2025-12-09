@@ -5,9 +5,12 @@ from PIL import Image
 import pandas as pd
 import plotly.express as px
 from src.contagem_placa import contar_colonias
-from src.lote import processar_lote
 
 st.title("🧫 BioCount – Contagem Automática de Colônias")
+
+# ============================
+# SIDEBAR – PARÂMETROS
+# ============================
 
 st.sidebar.header("⚙ Parâmetros de Detecção")
 
@@ -21,65 +24,113 @@ diametro_real_mm = st.sidebar.number_input(
     "Diâmetro real da placa (mm)", value=90
 )
 
-st.subheader("📤 Carregue uma imagem da placa:")
+# ============================
+# MODO TABS
+# ============================
 
-img_file = st.file_uploader(
-    "Escolha uma imagem de placa (jpg/png)", type=["jpg","png"]
-)
+tab1, tab2 = st.tabs(["🖼️ Imagem única", "📁 Processamento em lote"])
 
-if img_file is not None:
-    img = Image.open(img_file)
-    img_np = np.array(img)
+# ============================
+# TAB 1 — IMAGEM ÚNICA
+# ============================
 
-    # salvar temporário
-    tmp = "temp_input.png"
-    cv2.imwrite(tmp, cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
+with tab1:
 
-    # rodar processamento
-    result = contar_colonias(
-        tmp,
-        minRadius=minRadius,
-        maxRadius=maxRadius,
-        minDist=minDist,
-        param2=param2,
-        clipLimit=clipLimit,
-        diametro_real_mm=diametro_real_mm
+    st.subheader("📤 Carregue uma imagem da placa:")
+
+    img_file = st.file_uploader(
+        "Escolha uma imagem (jpg/png)", type=["jpg", "png"]
     )
 
-    st.subheader(f"🔢 Colônias detectadas: **{result['quantidade']}**")
+    if img_file is not None:
+        img = Image.open(img_file)
+        img_np = np.array(img)
 
-    st.image(result["img_saida"], caption="Imagem processada", use_column_width=True)
+        # converter para BGR para o OpenCV
+        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
 
-    # tabela
-    df = pd.DataFrame(result["registros"])
-    st.write("📄 Coordenadas e raios detectados:")
-    st.dataframe(df)
-
-    # gráfico distribuição de raios
-    if "r_px" in df.columns:
-        fig = px.histogram(df, x="r_px", nbins=20, title="Distribuição dos raios detectados")
-        st.plotly_chart(fig)
-
-    # download CSV
-    with open(result["csv_saida"], "rb") as f:
-        st.download_button(
-            "📥 Baixar CSV das colônias",
-            f,
-            file_name="colônias.csv"
+        # processar
+        result = contar_colonias(
+            img_bgr,
+            minRadius=minRadius,
+            maxRadius=maxRadius,
+            minDist=minDist,
+            param2=param2,
+            clipLimit=clipLimit,
+            diametro_real_mm=diametro_real_mm
         )
 
-# ------------------------------
-# PROCESSAMENTO EM LOTE
-# ------------------------------
+        st.subheader(f"🔢 Colônias detectadas: **{result['quantidade']}**")
 
-st.subheader("📁 Processar várias imagens (Lote)")
-pasta = st.text_input("Digite o caminho da pasta:")
+        st.image(
+            cv2.cvtColor(result["img_saida"], cv2.COLOR_BGR2RGB),
+            caption="Imagem processada",
+            use_column_width=True
+        )
 
-if st.button("Processar lote"):
-    if pasta:
-        lote = processar_lote(pasta, diametro_mm=diametro_real_mm)
-        df_lote = pd.DataFrame(lote, columns=["arquivo","colônias"])
+        # tabela
+        df = pd.DataFrame(result["registros"])
+        st.write("📄 Coordenadas e raios detectados:")
+        st.dataframe(df)
+
+        # histograma
+        if "r_px" in df.columns:
+            fig = px.histogram(df, x="r_px", nbins=20, title="Distribuição dos raios detectados")
+            st.plotly_chart(fig)
+
+
+# ============================
+# TAB 2 — PROCESSAMENTO EM LOTE
+# ============================
+
+with tab2:
+
+    st.subheader("📁 Envie várias imagens de uma só vez:")
+
+    uploaded_files = st.file_uploader(
+        "Selecione várias imagens (jpg/png)",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True
+    )
+
+    if uploaded_files:
+
+        resultados = []
+
+        for arquivo in uploaded_files:
+            img = Image.open(arquivo)
+            img_np = np.array(img)
+            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
+            result = contar_colonias(
+                img_bgr,
+                minRadius=minRadius,
+                maxRadius=maxRadius,
+                diametro_real_mm=diametro_real_mm,
+                minDist=minDist,
+                param2=param2,
+                clipLimit=clipLimit
+            )
+
+            resultados.append({
+                "arquivo": arquivo.name,
+                "quantidade": result["quantidade"],
+                "img": result["img_saida"]
+            })
+
+        # mostrar resultados
+        df_lote = pd.DataFrame(resultados)[["arquivo", "quantidade"]]
         st.write(df_lote)
 
-        fig = px.bar(df_lote, x="arquivo", y="colônias", title="Resultado por imagem")
+        # gráfico
+        fig = px.bar(df_lote, x="arquivo", y="quantidade", title="Colônias por imagem")
         st.plotly_chart(fig)
+
+        # exibir imagens marcadas
+        st.subheader("🖼️ Imagens processadas")
+
+        for r in resultados:
+            st.image(
+                cv2.cvtColor(r["img"], cv2.COLOR_BGR2RGB),
+                caption=f"{r['arquivo']} — {r['quantidade']} colônias"
+            )
