@@ -1,0 +1,1 @@
+O BioCount é uma ferramenta simples e prática para automatizar a contagem de colônias em placas de Petri usando visão computacional. Ideal para laboratórios, pesquisadores, microbiologistas e estudantes.
