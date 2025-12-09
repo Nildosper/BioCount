@@ -1,137 +1,88 @@
 import cv2
 import numpy as np
-import os
-from src.processamento import preprocessar_clahe
-from src.utils import detectar_borda, salvar_csv
-
+import pandas as pd
+import tempfile
 
 def contar_colonias(
-    img_path,
+    img_input,
     minRadius=5,
-    maxRadius=40,
+    maxRadius=30,
     minDist=20,
     param2=18,
     clipLimit=2.0,
-    diametro_real_mm=None,
-    salvar_imagem=True,
-    salvar_csv_flag=True
+    diametro_real_mm=90
 ):
-    # ---------------------------
-    # 1) Carregar imagem
-    # ---------------------------
-    img = cv2.imread(img_path)
-    if img is None:
-        raise FileNotFoundError(f"Imagem não encontrada: {img_path}")
 
-    img_gray, img_clahe = preprocessar_clahe(img, clipLimit=clipLimit)
+    # ---------------------------------------------------------
+    # Aceitar tanto caminho quanto matriz numpy
+    # ---------------------------------------------------------
+    if isinstance(img_input, str):
+        img_bgr = cv2.imread(img_input)
+    else:
+        img_bgr = img_input
 
-    # ---------------------------
-    # 2) Detectar borda da placa
-    # ---------------------------
-    cx, cy, r = detectar_borda(img_gray)
+    if img_bgr is None:
+        raise ValueError("❌ Erro: imagem não pôde ser carregada.")
 
-    # Criar máscara da placa
-    mask = np.zeros_like(img_gray, dtype=np.uint8)
-    cv2.circle(mask, (cx, cy), int(r * 0.88), 255, -1)
+    original = img_bgr.copy()
 
-    # Remover bordas reflexivas
-    mask = cv2.erode(mask, np.ones((15,15), np.uint8))
+    # ---------------------------------------------------------
+    # Pré-processamento
+    # ---------------------------------------------------------
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
+    clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
 
-    # Aplicar máscara
-    masked = cv2.bitwise_and(img_clahe, img_clahe, mask=mask)
-
-    # ---------------------------
-    # 3) Calcular escala mm/pixel
-    # ---------------------------
-    scale_mm = None
-    if diametro_real_mm is not None:
-        diametro_pixels = 2 * r
-        scale_mm = diametro_real_mm / diametro_pixels
-
-    # ---------------------------
-    # 4) Detectar colônias (círculos)
-    # ---------------------------
     circles = cv2.HoughCircles(
-    masked,
-    cv2.HOUGH_GRADIENT,
-    dp=1.4,
-    minDist=25,
-    param1=80,
-    param2=22,   # aumenta para reduzir falsos positivos
-    minRadius=5, # colônias pequenas
-    maxRadius=18 # limite superior realista
+        gray,
+        cv2.HOUGH_GRADIENT,
+        dp=1.2,
+        minDist=minDist,
+        param1=50,
+        param2=param2,
+        minRadius=minRadius,
+        maxRadius=maxRadius
     )
 
-
-    img_marked = img.copy()
     registros = []
-    count = 0
 
-    # ---------------------------
-    # 5) Processar círculos detectados
-    # ---------------------------
+    # ---------------------------------------------------------
+    # Desenhar círculos e salvar registros
+    # ---------------------------------------------------------
     if circles is not None:
         circles = np.round(circles[0, :]).astype("int")
 
-        h, w = mask.shape
+        for (x, y, r) in circles:
+            registros.append({
+                "x": int(x),
+                "y": int(y),
+                "r_px": int(r)
+            })
 
-        for (x, y, rad) in circles:
+            cv2.circle(original, (x, y), r, (0, 255, 0), 2)
+            cv2.circle(original, (x, y), 2, (0, 0, 255), 3)
 
-            # Ignorar valores fora da imagem (corrige IndexError)
-            if x < 0 or y < 0 or x >= w or y >= h:
-                continue
+    # ---------------------------------------------------------
+    # Criar CSV temporário para download
+    # ---------------------------------------------------------
+    df = pd.DataFrame(registros)
 
-            # Ignorar pontos fora da placa
-            if mask[y, x] == 0:
-                continue
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w", encoding="utf-8") as tmp_csv:
+        csv_path = tmp_csv.name
+        df.to_csv(csv_path, index=False, sep=";")
 
-            count += 1
+    # ---------------------------------------------------------
+    # Converter imagem BGR → RGB para funcionar no Streamlit
+    # ---------------------------------------------------------
+    img_rgb = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
 
-            # Desenhar círculos
-            cv2.circle(img_marked, (x, y), rad, (0, 0, 255), 2)
-            cv2.circle(img_marked, (x, y), 2, (0, 255, 0), 3)
-
-            # Registrar dados
-            registro = {
-                "x_px": x,
-                "y_px": y,
-                "r_px": rad
-            }
-
-            if scale_mm is not None:
-                registro["x_mm"] = round(x * scale_mm, 3)
-                registro["y_mm"] = round(y * scale_mm, 3)
-                registro["r_mm"] = round(rad * scale_mm, 3)
-
-            registros.append(registro)
-
-    # ---------------------------
-    # 6) Salvar imagem marcada
-    # ---------------------------
-    nome_base = os.path.basename(img_path).split(".")[0]
-
-    saida_img = None
-    if salvar_imagem:
-        saida_img = f"resultados/imagens_marcadas/{nome_base}_marcada.png"
-        os.makedirs(os.path.dirname(saida_img), exist_ok=True)
-        cv2.imwrite(saida_img, img_marked)
-
-    # ---------------------------
-    # 7) Salvar CSV com registros
-    # ---------------------------
-    saida_csv = None
-    if salvar_csv_flag:
-        saida_csv = f"resultados/csv/{nome_base}.csv"
-        salvar_csv(saida_csv, registros)
-
-    # ---------------------------
-    # 8) Retorno organizado
-    # ---------------------------
+    # ---------------------------------------------------------
+    # Retorno final
+    # ---------------------------------------------------------
     return {
-        "quantidade": count,
-        "img_saida": saida_img,
-        "csv_saida": saida_csv,
-        "scale_mm": scale_mm,
-        "registros": registros
+        "quantidade": len(registros),
+        "registros": registros,
+        "img_saida": img_rgb,   # pronto para st.image()
+        "csv_saida": csv_path,  # pronto para download
     }
