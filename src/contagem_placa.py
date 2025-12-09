@@ -13,27 +13,29 @@ def contar_colonias(
     diametro_real_mm=90
 ):
 
-    # ---------------------------------------------------------
-    # Aceitar tanto caminho quanto matriz numpy
-    # ---------------------------------------------------------
-    if isinstance(img_input, str):
-        img_bgr = cv2.imread(img_input)
+    # Se vier arquivo do Streamlit (numpy array)
+    if isinstance(img_input, np.ndarray):
+        img = img_input.copy()
+
+    # Se vier caminho de arquivo
+    elif isinstance(img_input, str):
+        img = cv2.imread(img_input)
+
     else:
-        img_bgr = img_input
+        raise TypeError("Entrada inválida para contar_colonias().")
 
-    if img_bgr is None:
-        raise ValueError("❌ Erro: imagem não pôde ser carregada.")
+    if img is None:
+        raise ValueError("Erro ao carregar imagem.")
 
-    original = img_bgr.copy()
+    # Conversão para cópia trabalhável
+    original = img.copy()
 
-    # ---------------------------------------------------------
-    # Pré-processamento
-    # ---------------------------------------------------------
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-
+    # ---- PRÉ-PROCESSAMENTO ----
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=(8, 8))
     gray = clahe.apply(gray)
 
+    # ---- DETECÇÃO ----
     circles = cv2.HoughCircles(
         gray,
         cv2.HOUGH_GRADIENT,
@@ -47,42 +49,26 @@ def contar_colonias(
 
     registros = []
 
-    # ---------------------------------------------------------
-    # Desenhar círculos e salvar registros
-    # ---------------------------------------------------------
     if circles is not None:
-        circles = np.round(circles[0, :]).astype("int")
+        circles = np.round(circles[0]).astype("int")
 
         for (x, y, r) in circles:
-            registros.append({
-                "x": int(x),
-                "y": int(y),
-                "r_px": int(r)
-            })
-
+            registros.append({"x": x, "y": y, "r_px": r})
             cv2.circle(original, (x, y), r, (0, 255, 0), 2)
             cv2.circle(original, (x, y), 2, (0, 0, 255), 3)
 
-    # ---------------------------------------------------------
-    # Criar CSV temporário para download
-    # ---------------------------------------------------------
+    # ---- SALVAR CSV TEMPORÁRIO ----
     df = pd.DataFrame(registros)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w") as f:
+        df.to_csv(f.name, index=False, sep=";")
+        csv_path = f.name
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w", encoding="utf-8") as tmp_csv:
-        csv_path = tmp_csv.name
-        df.to_csv(csv_path, index=False, sep=";")
-
-    # ---------------------------------------------------------
-    # Converter imagem BGR → RGB para funcionar no Streamlit
-    # ---------------------------------------------------------
+    # ---- CONVERTER PARA RGB ----
     img_rgb = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
 
-    # ---------------------------------------------------------
-    # Retorno final
-    # ---------------------------------------------------------
     return {
         "quantidade": len(registros),
         "registros": registros,
-        "img_saida": img_rgb,   # pronto para st.image()
-        "csv_saida": csv_path,  # pronto para download
+        "img_saida": img_rgb,
+        "csv_saida": csv_path,
     }
