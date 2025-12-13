@@ -43,42 +43,59 @@ def extract_metrics(binary, original, px_to_mm):
     registros = []
     overlay = original.copy()
 
-    h, w = binary.shape
-    cx, cy = w // 2, h // 2
-    raio_placa = min(cx, cy) * 0.95  # 🔒 margem de segurança (remove borda)
+    # -----------------------------
+    # Cálculo adaptativo de áreas
+    # -----------------------------
+    areas = [
+        stats[i, cv2.CC_STAT_AREA]
+        for i in range(1, num)
+        if stats[i, cv2.CC_STAT_AREA] > 0
+    ]
 
+    if not areas:
+        return registros, overlay
+
+    area_media = np.mean(areas)
+    area_min = area_media * 0.30   # aceita colônias pequenas reais
+    area_max = area_media * 3.00   # remove artefatos grandes / borda
+
+    # -----------------------------
+    # Extração das métricas
+    # -----------------------------
     for i in range(1, num):
         area = stats[i, cv2.CC_STAT_AREA]
-        if area < 30:
+
+        # Filtro adaptativo
+        if area < area_min or area > area_max:
             continue
 
-        x, y = centroids[i]
-
-        # ⛔ FILTRO DE BORDA (NOVA LINHA)
-        if np.sqrt((x - cx)**2 + (y - cy)**2) > raio_placa:
-            continue
-
+        cx, cy = centroids[i]
         radius_eq = np.sqrt(area / np.pi)
-        circ = (4 * np.pi * area) / (stats[i, cv2.CC_STAT_WIDTH]**2 + 1e-6)
+
+        circularidade = (
+            4 * np.pi * area /
+            (stats[i, cv2.CC_STAT_WIDTH]**2 + 1e-6)
+        )
 
         registros.append({
-            "x_px": int(x),
-            "y_px": int(y),
-            "area_px2": area,
-            "raio_eq_px": radius_eq,
-            "diametro_mm": 2 * radius_eq * px_to_mm,
-            "circularidade": circ
+            "x_px": int(cx),
+            "y_px": int(cy),
+            "area_px2": int(area),
+            "raio_eq_px": round(radius_eq, 2),
+            "diametro_mm": round(2 * radius_eq * px_to_mm, 3),
+            "circularidade": round(circularidade, 3)
         })
 
         cv2.circle(
             overlay,
-            (int(x), int(y)),
+            (int(cx), int(cy)),
             int(radius_eq),
-            (0,255,0),
+            (0, 255, 0),
             2
         )
 
     return registros, overlay
+
 
 
 # -------------------------
