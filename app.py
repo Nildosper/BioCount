@@ -38,77 +38,73 @@ def segment_colonies(diff):
     return th
 
 def extract_metrics(binary, original, px_to_mm):
-    num, labels, stats, centroids = cv2.connectedComponentsWithStats(binary)
+    h, w = binary.shape
+    cx, cy = w // 2, h // 2
+    raio_placa = min(cx, cy)
+
+    # Margem de exclusão da borda (10% do raio)
+    margem = int(raio_placa * 0.10)
+    raio_util = raio_placa - margem
+
+    # -------------------------
+    # 1. Máscara circular REAL
+    # -------------------------
+    mask = np.zeros_like(binary, dtype=np.uint8)
+    cv2.circle(mask, (cx, cy), raio_util, 255, -1)
+
+    binary_clean = cv2.bitwise_and(binary, mask)
+
+    # -------------------------
+    # 2. Componentes conectados
+    # -------------------------
+    num, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_clean)
 
     registros = []
     overlay = original.copy()
 
-    h, w = binary.shape
-    cx_placa, cy_placa = w // 2, h // 2
-    raio_placa = min(cx_placa, cy_placa)
-
-    # Margem de segurança para eliminar borda (ajustável)
-    margem_borda = int(raio_placa * 0.08)  # 8% do raio
-    raio_util = raio_placa - margem_borda
-
-    # -----------------------------
-    # Coleta de áreas válidas
-    # -----------------------------
-    areas = []
-    for i in range(1, num):
-        x, y = centroids[i]
-        dist = np.sqrt((x - cx_placa)**2 + (y - cy_placa)**2)
-        if dist < raio_util:
-            areas.append(stats[i, cv2.CC_STAT_AREA])
+    # Coletar áreas válidas
+    areas = [
+        stats[i, cv2.CC_STAT_AREA]
+        for i in range(1, num)
+        if stats[i, cv2.CC_STAT_AREA] > 20
+    ]
 
     if not areas:
         return registros, overlay
 
-    area_media = np.mean(areas)
-    area_min = area_media * 0.30
-    area_max = area_media * 3.00
+    area_med = np.median(areas)
+    area_min = area_med * 0.35
+    area_max = area_med * 2.5
 
-    # -----------------------------
-    # Extração final
-    # -----------------------------
+    # -------------------------
+    # 3. Extração final
+    # -------------------------
     for i in range(1, num):
         area = stats[i, cv2.CC_STAT_AREA]
-        cx, cy = centroids[i]
-
-        # ⛔ 1. Excluir borda geometricamente
-        dist = np.sqrt((cx - cx_placa)**2 + (cy - cy_placa)**2)
-        if dist > raio_util:
-            continue
-
-        # ⛔ 2. Filtro adaptativo por área
         if area < area_min or area > area_max:
             continue
 
+        cx_i, cy_i = centroids[i]
         radius_eq = np.sqrt(area / np.pi)
 
-        circularidade = (
-            4 * np.pi * area /
-            (stats[i, cv2.CC_STAT_WIDTH]**2 + 1e-6)
-        )
-
         registros.append({
-            "x_px": int(cx),
-            "y_px": int(cy),
+            "x_px": int(cx_i),
+            "y_px": int(cy_i),
             "area_px2": int(area),
             "raio_eq_px": round(radius_eq, 2),
-            "diametro_mm": round(2 * radius_eq * px_to_mm, 3),
-            "circularidade": round(circularidade, 3)
+            "diametro_mm": round(2 * radius_eq * px_to_mm, 3)
         })
 
         cv2.circle(
             overlay,
-            (int(cx), int(cy)),
+            (int(cx_i), int(cy_i)),
             int(radius_eq),
             (0, 255, 0),
             2
         )
 
     return registros, overlay
+
 
 
 # -------------------------
@@ -235,19 +231,16 @@ with tab2:
             }
 
             # Mostrar imagem
-            if "cols" not in st.session_state:
-             st.session_state["cols"] = st.columns(2)
+            cols = st.columns(3)
 
-            col = st.session_state["cols"].pop(0)
-
-            col.image(
-                cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
-                caption=file.name,
-                use_container_width=True
+            for i, (file, overlay) in enumerate(imagens_processadas):
+                with cols[i % 3]:
+                    st.image(
+                        cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
+                        caption=file,
+                        use_container_width=True
         )
 
-            if not st.session_state["cols"]:
-             st.session_state["cols"] = st.columns(2)
 
 
             imagens_zip.append((file.name, overlay, diff))
