@@ -43,33 +43,47 @@ def extract_metrics(binary, original, px_to_mm):
     registros = []
     overlay = original.copy()
 
+    h, w = binary.shape
+    cx_placa, cy_placa = w // 2, h // 2
+    raio_placa = min(cx_placa, cy_placa)
+
+    # Margem de segurança para eliminar borda (ajustável)
+    margem_borda = int(raio_placa * 0.08)  # 8% do raio
+    raio_util = raio_placa - margem_borda
+
     # -----------------------------
-    # Cálculo adaptativo de áreas
+    # Coleta de áreas válidas
     # -----------------------------
-    areas = [
-        stats[i, cv2.CC_STAT_AREA]
-        for i in range(1, num)
-        if stats[i, cv2.CC_STAT_AREA] > 0
-    ]
+    areas = []
+    for i in range(1, num):
+        x, y = centroids[i]
+        dist = np.sqrt((x - cx_placa)**2 + (y - cy_placa)**2)
+        if dist < raio_util:
+            areas.append(stats[i, cv2.CC_STAT_AREA])
 
     if not areas:
         return registros, overlay
 
     area_media = np.mean(areas)
-    area_min = area_media * 0.30   # aceita colônias pequenas reais
-    area_max = area_media * 3.00   # remove artefatos grandes / borda
+    area_min = area_media * 0.30
+    area_max = area_media * 3.00
 
     # -----------------------------
-    # Extração das métricas
+    # Extração final
     # -----------------------------
     for i in range(1, num):
         area = stats[i, cv2.CC_STAT_AREA]
+        cx, cy = centroids[i]
 
-        # Filtro adaptativo
+        # ⛔ 1. Excluir borda geometricamente
+        dist = np.sqrt((cx - cx_placa)**2 + (cy - cy_placa)**2)
+        if dist > raio_util:
+            continue
+
+        # ⛔ 2. Filtro adaptativo por área
         if area < area_min or area > area_max:
             continue
 
-        cx, cy = centroids[i]
         radius_eq = np.sqrt(area / np.pi)
 
         circularidade = (
@@ -95,7 +109,6 @@ def extract_metrics(binary, original, px_to_mm):
         )
 
     return registros, overlay
-
 
 
 # -------------------------
