@@ -159,30 +159,75 @@ with tab2:
         img_ref = load_image(ref_file)
         px_to_mm = diametro_placa_mm / img_ref.shape[0]
 
-        resultados = []
+        resultados_colunas = {}
+        imagens_zip = []
 
         for file in files:
             img_sam = load_image(file)
+
+            # 🔒 Garantir mesma escala
+            if img_sam.shape != img_ref.shape:
+                img_sam = cv2.resize(
+                    img_sam,
+                    (img_ref.shape[1], img_ref.shape[0]),
+                    interpolation=cv2.INTER_AREA
+                )
+
             diff = preprocess_difference(img_ref, img_sam, clipLimit)
-            binary = segment_colonies(diff)
-            regs, overlay = extract_metrics(binary, img_sam, px_to_mm)
 
-            for r in regs:
-                r["arquivo"] = file.name
-                resultados.append(r)
+            # Kernel adaptativo
+            k = max(3, img_ref.shape[0] // 300)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            _, th = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            th = cv2.morphologyEx(th, cv2.MORPH_OPEN, kernel, iterations=2)
+            th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel, iterations=2)
 
+            registros, overlay = extract_metrics(th, img_sam, px_to_mm)
+
+            df = pd.DataFrame(registros)
+
+            # 📊 Métricas agregadas
+            resultados_colunas[file.name] = {
+                "contagem_total": len(df),
+                "area_media_px2": df["area_px2"].mean() if not df.empty else 0,
+                "diametro_medio_mm": df["diametro_mm"].mean() if not df.empty else 0,
+                "desvio_diam_mm": df["diametro_mm"].std() if not df.empty else 0,
+                "densidade_col_cm2": len(df) / (np.pi * (diametro_placa_mm/20)**2)
+            }
+
+            # Mostrar imagem
             st.image(
                 cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
                 caption=f"Processado: {file.name}"
             )
 
-        df = pd.DataFrame(resultados)
+            imagens_zip.append((file.name, overlay, diff))
 
-        st.subheader("Resumo do lote")
-        st.dataframe(df)
+        # CSV final (amostras em colunas)
+        df_final = pd.DataFrame(resultados_colunas)
+        st.subheader("📄 Resultados consolidados")
+        st.dataframe(df_final)
 
-        fig = px.histogram(df, x="diametro_mm", color="arquivo", nbins=20)
-        st.plotly_chart(fig, use_container_width=True)
+        # 📦 ZIP
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = f"{tmp}/resultados_lote.csv"
+            df_final.to_csv(csv_path)
 
-    else:
-        st.warning("⚠️ Referência e pelo menos uma amostra são obrigatórias.")
+            zip_path = f"{tmp}/resultados_lote.zip"
+            with zipfile.ZipFile(zip_path, "w") as z:
+                z.write(csv_path, "resultados_lote.csv")
+
+                for nome, overlay, diff in imagens_zip:
+                    p1 = f"{tmp}/{nome}_processado.png"
+                    p2 = f"{tmp}/{nome}_diferenca.png"
+                    cv2.imwrite(p1, overlay)
+                    cv2.imwrite(p2, diff)
+                    z.write(p1, f"imagens/{nome}_processado.png")
+                    z.write(p2, f"imagens/{nome}_diferenca.png")
+
+            with open(zip_path, "rb") as f:
+                st.download_button(
+                    "⬇️ Baixar todos os resultados (ZIP)",
+                    f,
+                    "resultados_lote.zip"
+                )
