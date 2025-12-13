@@ -2,186 +2,187 @@ import streamlit as st
 import cv2
 import numpy as np
 import pandas as pd
-from PIL import Image
-import os
 import tempfile
+import zipfile
+import plotly.express as px
+from PIL import Image
 
-st.set_page_config(page_title="BioCount", layout="wide")
+st.set_page_config(layout="wide")
+st.title("🧫 BioCount — Contagem Automatizada com Placa de Referência")
 
-st.title("🧫 BioCount – Contagem de Colônias com Imagem de Referência")
+# -------------------------
+# Funções auxiliares
+# -------------------------
+def load_image(file):
+    img = Image.open(file).convert("RGB")
+    return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
-# =============================
-# Função principal com referência
-# =============================
-def contar_colonias_com_referencia(
-    img_ref_bgr,
-    img_sample_bgr,
-    minRadius,
-    maxRadius,
-    minDist,
-    param2,
-    clipLimit
-):
+def preprocess_difference(img_ref, img_sample, clipLimit):
+    gray_ref = cv2.cvtColor(img_ref, cv2.COLOR_BGR2GRAY)
+    gray_sam = cv2.cvtColor(img_sample, cv2.COLOR_BGR2GRAY)
 
-    # Pré-processamento
-    gray_ref = cv2.cvtColor(img_ref_bgr, cv2.COLOR_BGR2GRAY)
-    gray_smp = cv2.cvtColor(img_sample_bgr, cv2.COLOR_BGR2GRAY)
-
-    clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=(8,8))
     gray_ref = clahe.apply(gray_ref)
-    gray_smp = clahe.apply(gray_smp)
+    gray_sam = clahe.apply(gray_sam)
 
-    # Subtração absoluta
-    diff = cv2.absdiff(gray_smp, gray_ref)
+    diff = cv2.absdiff(gray_sam, gray_ref)
+    return diff
 
-    # Detecção de círculos
-    circles = cv2.HoughCircles(
-        diff,
-        cv2.HOUGH_GRADIENT,
-        dp=1.2,
-        minDist=minDist,
-        param1=50,
-        param2=param2,
-        minRadius=minRadius,
-        maxRadius=maxRadius
-    )
+def segment_colonies(diff):
+    _, th = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    output = img_sample_bgr.copy()
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
+    th = cv2.morphologyEx(th, cv2.MORPH_OPEN, kernel, iterations=2)
+    th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    return th
+
+def extract_metrics(binary, original, px_to_mm):
+    num, labels, stats, centroids = cv2.connectedComponentsWithStats(binary)
+
     registros = []
+    overlay = original.copy()
 
-    if circles is not None:
-        circles = np.round(circles[0]).astype(int)
+    for i in range(1, num):
+        area = stats[i, cv2.CC_STAT_AREA]
+        if area < 30:
+            continue
 
-        h, w = diff.shape
-        cx, cy = w // 2, h // 2
-        raio_placa = min(cx, cy) - 20
+        cx, cy = centroids[i]
+        radius_eq = np.sqrt(area / np.pi)
 
-        for (x, y, r) in circles:
+        circ = (4 * np.pi * area) / (stats[i, cv2.CC_STAT_WIDTH]**2 + 1e-6)
 
-            # Filtro espacial (fora da placa)
-            if np.sqrt((x - cx)**2 + (y - cy)**2) > raio_placa:
-                continue
+        registros.append({
+            "x_px": int(cx),
+            "y_px": int(cy),
+            "area_px2": area,
+            "raio_eq_px": radius_eq,
+            "diametro_mm": 2 * radius_eq * px_to_mm,
+            "circularidade": circ
+        })
 
-            registros.append({"x": x, "y": y, "r_px": r})
-
-            cv2.circle(output, (x, y), r, (0, 255, 0), 2)
-            cv2.circle(output, (x, y), 2, (0, 0, 255), 3)
-
-    return {
-        "quantidade": len(registros),
-        "registros": registros,
-        "img_saida": cv2.cvtColor(output, cv2.COLOR_BGR2RGB),
-        "diff": diff
-    }
-
-# =============================
-# Parâmetros
-# =============================
-st.sidebar.header("⚙️ Parâmetros de Detecção")
-
-minRadius = st.sidebar.slider("Raio mínimo", 3, 30, 6)
-maxRadius = st.sidebar.slider("Raio máximo", 5, 60, 21)
-minDist = st.sidebar.slider("Distância mínima entre centros", 5, 50, 21)
-param2 = st.sidebar.slider("Param2 (Hough)", 5, 50, 21)
-clipLimit = st.sidebar.slider("CLAHE clipLimit", 0.5, 5.0, 1.4)
-
-modo = st.radio("Modo de processamento", ["Imagem única", "Processamento em lote"])
-
-# =============================
-# IMAGEM ÚNICA
-# =============================
-if modo == "Imagem única":
-
-    st.subheader("📌 Passo 1 – Envie a imagem de referência (SEM colônias)")
-    ref_file = st.file_uploader(
-        "Imagem de referência",
-        type=["jpg", "jpeg", "png"],
-        key="ref_unica"
-    )
-
-    st.subheader("📌 Passo 2 – Envie a imagem da amostra (COM colônias)")
-    sample_file = st.file_uploader(
-        "Imagem da amostra",
-        type=["jpg", "jpeg", "png"],
-        key="sample_unica"
-    )
-
-    if ref_file and sample_file:
-
-        ref_img = cv2.cvtColor(np.array(Image.open(ref_file)), cv2.COLOR_RGB2BGR)
-        sample_img = cv2.cvtColor(np.array(Image.open(sample_file)), cv2.COLOR_RGB2BGR)
-
-        resultado = contar_colonias_com_referencia(
-            ref_img,
-            sample_img,
-            minRadius,
-            maxRadius,
-            minDist,
-            param2,
-            clipLimit
+        cv2.circle(
+            overlay,
+            (int(cx), int(cy)),
+            int(radius_eq),
+            (0,255,0),
+            2
         )
 
-        st.success(f"🧪 Colônias detectadas: {resultado['quantidade']}")
+    return registros, overlay
+
+# -------------------------
+# Sidebar
+# -------------------------
+st.sidebar.header("⚙️ Parâmetros")
+clipLimit = st.sidebar.slider("CLAHE clipLimit", 1.0, 5.0, 1.5)
+diametro_placa_mm = st.sidebar.number_input("Diâmetro real da placa (mm)", 90)
+
+# -------------------------
+# Abas
+# -------------------------
+tab1, tab2 = st.tabs(["📷 Processamento único", "📁 Processamento em lote"])
+
+# =====================================================
+# PROCESSAMENTO ÚNICO
+# =====================================================
+with tab1:
+    st.subheader("Imagem de referência (sem colônias)")
+    ref_file = st.file_uploader("Upload da referência", type=["jpg","png"], key="ref1")
+
+    st.subheader("Imagem da amostra")
+    sample_file = st.file_uploader("Upload da amostra", type=["jpg","png"], key="sam1")
+
+    if ref_file and sample_file:
+        img_ref = load_image(ref_file)
+        img_sam = load_image(sample_file)
+
+        diff = preprocess_difference(img_ref, img_sam, clipLimit)
+        binary = segment_colonies(diff)
+
+        px_to_mm = diametro_placa_mm / img_ref.shape[0]
+
+        registros, overlay = extract_metrics(binary, img_sam, px_to_mm)
+        df = pd.DataFrame(registros)
 
         col1, col2 = st.columns(2)
-        with col1:
-            st.image(resultado["img_saida"], caption="Imagem processada", width=400)
-        with col2:
-            st.image(resultado["diff"], caption="Imagem diferença (amostra - referência)", width=400)
+        col1.image(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB), caption="Imagem processada")
+        col2.image(diff, caption="Diferença (amostra - referência)", clamp=True)
 
-        df = pd.DataFrame(resultado["registros"])
+        st.metric("Colônias detectadas", len(df))
+
+        st.subheader("📊 Distribuição de tamanhos")
+        fig = px.histogram(df, x="diametro_mm", nbins=20)
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("📄 Dados")
         st.dataframe(df)
 
+        # Downloads
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = f"{tmp}/resultado.csv"
+            img_path = f"{tmp}/imagem_processada.png"
+            diff_path = f"{tmp}/diferenca.png"
+
+            df.to_csv(csv_path, index=False)
+            cv2.imwrite(img_path, overlay)
+            cv2.imwrite(diff_path, diff)
+
+            zip_path = f"{tmp}/resultados.zip"
+            with zipfile.ZipFile(zip_path, "w") as z:
+                z.write(csv_path, "resultado.csv")
+                z.write(img_path, "imagem_processada.png")
+                z.write(diff_path, "imagem_diferenca.png")
+
+            with open(zip_path, "rb") as f:
+                st.download_button("⬇️ Baixar resultados (ZIP)", f, "resultados.zip")
+
     else:
-        st.warning("⚠️ É obrigatório enviar a imagem de referência e a imagem da amostra.")
+        st.warning("⚠️ Envie a imagem de referência e a amostra para processar.")
 
-# =============================
+# =====================================================
 # PROCESSAMENTO EM LOTE
-# =============================
-else:
+# =====================================================
+with tab2:
+    st.subheader("Imagem de referência (obrigatória)")
+    ref_file = st.file_uploader("Upload da referência", type=["jpg","png"], key="ref2")
 
-    st.subheader("📌 Passo 1 – Envie a imagem de referência (SEM colônias)")
-    ref_file = st.file_uploader(
-        "Imagem de referência",
-        type=["jpg", "jpeg", "png"],
-        key="ref_lote"
+    st.subheader("Imagens das amostras")
+    files = st.file_uploader(
+        "Upload das amostras",
+        type=["jpg","png"],
+        accept_multiple_files=True
     )
 
-    st.subheader("📌 Passo 2 – Envie as imagens das amostras")
-    sample_files = st.file_uploader(
-        "Imagens das amostras",
-        type=["jpg", "jpeg", "png"],
-        accept_multiple_files=True,
-        key="sample_lote"
-    )
-
-    if ref_file and sample_files:
-
-        ref_img = cv2.cvtColor(np.array(Image.open(ref_file)), cv2.COLOR_RGB2BGR)
+    if ref_file and files:
+        img_ref = load_image(ref_file)
+        px_to_mm = diametro_placa_mm / img_ref.shape[0]
 
         resultados = []
 
-        for file in sample_files:
-            sample_img = cv2.cvtColor(np.array(Image.open(file)), cv2.COLOR_RGB2BGR)
+        for file in files:
+            img_sam = load_image(file)
+            diff = preprocess_difference(img_ref, img_sam, clipLimit)
+            binary = segment_colonies(diff)
+            regs, overlay = extract_metrics(binary, img_sam, px_to_mm)
 
-            res = contar_colonias_com_referencia(
-                ref_img,
-                sample_img,
-                minRadius,
-                maxRadius,
-                minDist,
-                param2,
-                clipLimit
+            for r in regs:
+                r["arquivo"] = file.name
+                resultados.append(r)
+
+            st.image(
+                cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
+                caption=f"Processado: {file.name}"
             )
 
-            resultados.append({
-                "arquivo": file.name,
-                "quantidade": res["quantidade"]
-            })
-
         df = pd.DataFrame(resultados)
-        st.success("✅ Processamento em lote concluído")
+
+        st.subheader("Resumo do lote")
         st.dataframe(df)
 
+        fig = px.histogram(df, x="diametro_mm", color="arquivo", nbins=20)
+        st.plotly_chart(fig, use_container_width=True)
+
     else:
-        st.warning("⚠️ Para processar em lote, a imagem de referência é obrigatória.")
+        st.warning("⚠️ Referência e pelo menos uma amostra são obrigatórias.")
