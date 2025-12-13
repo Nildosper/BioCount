@@ -43,19 +43,27 @@ def extract_metrics(binary, original, px_to_mm):
     registros = []
     overlay = original.copy()
 
+    h, w = binary.shape
+    cx, cy = w // 2, h // 2
+    raio_placa = min(cx, cy) * 0.95  # 🔒 margem de segurança (remove borda)
+
     for i in range(1, num):
         area = stats[i, cv2.CC_STAT_AREA]
         if area < 30:
             continue
 
-        cx, cy = centroids[i]
-        radius_eq = np.sqrt(area / np.pi)
+        x, y = centroids[i]
 
+        # ⛔ FILTRO DE BORDA (NOVA LINHA)
+        if np.sqrt((x - cx)**2 + (y - cy)**2) > raio_placa:
+            continue
+
+        radius_eq = np.sqrt(area / np.pi)
         circ = (4 * np.pi * area) / (stats[i, cv2.CC_STAT_WIDTH]**2 + 1e-6)
 
         registros.append({
-            "x_px": int(cx),
-            "y_px": int(cy),
+            "x_px": int(x),
+            "y_px": int(y),
             "area_px2": area,
             "raio_eq_px": radius_eq,
             "diametro_mm": 2 * radius_eq * px_to_mm,
@@ -64,13 +72,14 @@ def extract_metrics(binary, original, px_to_mm):
 
         cv2.circle(
             overlay,
-            (int(cx), int(cy)),
+            (int(x), int(y)),
             int(radius_eq),
             (0,255,0),
             2
         )
 
     return registros, overlay
+
 
 # -------------------------
 # Sidebar
@@ -196,10 +205,20 @@ with tab2:
             }
 
             # Mostrar imagem
-            st.image(
+            if "cols" not in st.session_state:
+             st.session_state["cols"] = st.columns(2)
+
+            col = st.session_state["cols"].pop(0)
+
+            col.image(
                 cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
-                caption=f"Processado: {file.name}"
-            )
+                caption=file.name,
+                use_container_width=True
+        )
+
+            if not st.session_state["cols"]:
+             st.session_state["cols"] = st.columns(2)
+
 
             imagens_zip.append((file.name, overlay, diff))
 
